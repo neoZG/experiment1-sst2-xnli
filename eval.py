@@ -6,6 +6,7 @@
 # The results are printed for each language.
 
 import time, argparse
+import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from sklearn.metrics import accuracy_score, f1_score
@@ -26,6 +27,9 @@ model_dir = f"outputs/{model_choice}-{task}"
 # Load tokenizer & model
 tokenizer = AutoTokenizer.from_pretrained(model_dir)
 model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+model.eval()
 
 # Load evaluation data
 if task == "sst2":
@@ -63,10 +67,11 @@ for lang, data in eval_sets.items():
     start = time.time()
     for i in range(0, num_samples, batch_size):
         batch = data[i: i+batch_size]
+        batch_inputs = {k: v.to(device) for k, v in batch.items() if k != 'label'}
         with torch.no_grad():
-            outputs = model(batch['input_ids'], attention_mask=batch['attention_mask'])
-        logits = outputs.logits
-        preds = logits.argmax(dim=-1).cpu().numpy()
+            outputs = model(**batch_inputs)
+        logits = outputs.logits.cpu()
+        preds = logits.argmax(dim=-1).numpy()
         labels = batch['label'].numpy()
         all_preds.append(preds)
         all_labels.append(labels)

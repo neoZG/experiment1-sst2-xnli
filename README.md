@@ -28,6 +28,8 @@ pip install git+https://github.com/huggingface/transformers.git@096f25ae1f501a08
 ```
 This provides the BitLinear implementation needed for BitNet.
 
+**⚠️ Important Note on BitNet Efficiency**: The current implementation using the Transformers library will not provide the full efficiency benefits (speed, latency, energy) of BitNet's 1-bit architecture. These benefits require specialized computational kernels not available in the standard Transformers library. While you will see reduced memory usage, for optimal efficiency in production, consider using the official BitNet C++ implementation: [bitnet.cpp](https://github.com/microsoft/bitnet).
+
 ## How to Run Experiments
 ### Fine-tuning
 Use the `train.py` script to fine-tune a model on a task. Training parameters can be specified via command-line arguments or by editing `config.yaml`. For example:

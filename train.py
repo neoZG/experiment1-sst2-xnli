@@ -7,6 +7,7 @@
 # Finally, the model is saved to output_dir.
 
 import os, time, argparse, yaml
+import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from transformers import BitsAndBytesConfig
