@@ -1,0 +1,12 @@
+# Default configuration parameters for training
+task: "sst2"               # "sst2" for sentiment, "xnli" for NLI (uses MultiNLI train)
+model: "distilbert"        # options: "bitnet", "distilbert", "gptneo"
+train_samples: 1000        # number of training samples to use (-1 for full dataset)
+num_epochs: 3              # training epochs
+batch_size: 16             # batch size (per device)
+learning_rate: 2e-5        # initial learning rate
+max_seq_length: 128        # max token length (for tokenizer)
+bf16: false                # whether to use bfloat16 training (for BitNet or if GPU supports)
+fp16: true                 # whether to use float16 mixed precision
+quant8: false              # whether to load model in 8-bit (for GPT-Neo or others)
+output_dir: "outputs"      # base directory for saving models
