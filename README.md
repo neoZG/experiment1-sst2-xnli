@@ -88,3 +88,70 @@ This project uses open-source models:
 - DistilBERT by Hugging Face (Apache 2.0)
 - GPT-Neo by EleutherAI (MIT License)
 Please refer to the model licenses and the original papers for more information. 
+
+## Implementation Details and Limitations
+
+### Reproducibility
+- Fixed random seed (42) for all components (PyTorch, NumPy, HuggingFace)
+- Training configuration saved with model for consistent evaluation
+- Results saved in YAML format for analysis and reproduction
+
+### XNLI Zero-shot Transfer
+- Training uses English-only MultiNLI data
+- Zero-shot evaluation on other languages
+- Expected performance drop in non-English languages
+- Consider language-specific fine-tuning for production use
+
+### Resource Monitoring
+- Latency: Average inference time per sample
+- Memory: Peak GPU memory usage tracked
+- Results saved in resource_usage.yaml
+
+### Label Handling
+- SST-2: Binary classification (positive/negative)
+- XNLI: Explicit label mapping (contradiction=0, entailment=1, neutral=2)
+- Consistent mapping verified between train and evaluation
+
+### Performance Optimization
+- Parallel data preprocessing (multi-core tokenization)
+- Proper device management and memory tracking
+- Consistent sequence length between training and evaluation
+
+## Known Limitations
+
+1. **Memory and Energy Metrics**:
+   - Current implementation tracks GPU memory
+   - Energy consumption requires external tools (e.g., nvidia-smi)
+   - Consider using NVIDIA Nsight for detailed profiling
+
+2. **Cross-lingual Performance**:
+   - Zero-shot transfer limitations
+   - No multilingual training data
+   - Performance gap in non-English languages
+
+3. **Validation Strategy**:
+   - Single validation set used
+   - No cross-validation implemented
+   - Consider bootstrapping for robust evaluation
+
+## Possible Improvements
+
+1. **Model Efficiency**:
+   - Implement BitNet C++ backend for production
+   - Add energy consumption tracking
+   - Optimize batch processing
+
+2. **Evaluation Robustness**:
+   - Add cross-validation splits
+   - Implement confidence intervals
+   - Add statistical significance tests
+
+3. **Training Enhancement**:
+   - Add multilingual pre-training option
+   - Implement gradient accumulation
+   - Add model checkpointing
+
+4. **Monitoring and Logging**:
+   - Add structured logging
+   - Implement training curves
+   - Add hardware utilization tracking 

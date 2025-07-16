@@ -8,11 +8,19 @@
 
 import os, time, argparse, yaml
 import torch
-from datasets import load_dataset
+import random
+import numpy as np
+from datasets import load_dataset, set_seed
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from transformers import BitsAndBytesConfig
-import numpy as np
 from sklearn.metrics import accuracy_score, f1_score
+
+# Set all random seeds for reproducibility
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+set_seed(SEED)
 
 # Parse arguments and config
 parser = argparse.ArgumentParser(description="Fine-tune models on SST-2 or XNLI(MultiNLI)")
@@ -63,14 +71,63 @@ if task == "sst2":
     ds = load_dataset("glue", "sst2")
     train_data = ds["train"]
     val_data = ds["validation"]
+    num_labels = 2
+    label_map = None  # Binary classification, no mapping needed
 elif task == "xnli":
     # Use MultiNLI for training, XNLI for validation (English dev as val set for simplicity)
     mnli = load_dataset("multi_nli")
     train_data = mnli["train"]
-    # Use MultiNLI matched validation as a proxy for English dev
     val_data = mnli["validation_matched"]
+    num_labels = 3
+    # Explicit label mapping for consistency
+    label_map = {"contradiction": 0, "entailment": 1, "neutral": 2}
+    
+    # Verify and map labels if needed
+    if "label" in train_data.features and isinstance(train_data.features["label"], datasets.ClassLabel):
+        dataset_labels = train_data.features["label"].names
+        if dataset_labels != list(label_map.keys()):
+            print(f"Warning: Label mapping mismatch. Dataset labels: {dataset_labels}")
+            print(f"Expected labels: {list(label_map.keys())}")
+            # Create reverse mapping from dataset labels to our expected indices
+            reverse_map = {label: i for i, label in enumerate(dataset_labels)}
+            # Map dataset indices to our expected indices
+            def remap_labels(example):
+                example["label"] = label_map[dataset_labels[example["label"]]]
+                return example
+            print("Remapping labels to maintain consistency...")
+            train_data = train_data.map(remap_labels)
+            val_data = val_data.map(remap_labels)
 else:
     raise ValueError("Unknown task!")
+
+# Save training configuration with detailed label info
+config_to_save = {
+    "task": task,
+    "model": model_choice,
+    "seed": SEED,
+    "train_samples": train_samples,
+    "num_epochs": num_epochs,
+    "batch_size": batch_size,
+    "learning_rate": learning_rate,
+    "max_seq_length": max_seq_length,
+    "label_map": label_map,
+    "num_labels": num_labels,
+    "dataset_info": {
+        "train_size": len(train_data),
+        "val_size": len(val_data),
+        "label_distribution": {
+            "train": dict(train_data["label"].value_counts().items()),
+            "val": dict(val_data["label"].value_counts().items())
+        }
+    }
+}
+
+try:
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "training_config.yaml"), 'w') as f:
+        yaml.dump(config_to_save, f)
+except Exception as e:
+    print(f"Warning: Failed to save training configuration: {str(e)}")
 
 # Subsample training data if specified
 if train_samples is not None and train_samples > 0:
@@ -105,7 +162,7 @@ model = AutoModelForSequenceClassification.from_pretrained(
 if model.config.vocab_size != len(tokenizer):
     model.resize_token_embeddings(len(tokenizer))
 
-# Tokenization function
+# Tokenization function with resource monitoring
 def preprocess_function(examples):
     # For NLI, we have premise and hypothesis
     if task == "xnli":
@@ -115,9 +172,20 @@ def preprocess_function(examples):
         return tokenizer(examples['sentence'], 
                          truncation=True, padding='max_length', max_length=max_seq_length)
 
-# Prepare datasets for training
-train_dataset = train_data.map(preprocess_function, batched=True)
-val_dataset = val_data.map(preprocess_function, batched=True)
+# Prepare datasets for training with parallel processing
+train_dataset = train_data.map(
+    preprocess_function, 
+    batched=True, 
+    num_proc=os.cpu_count(),
+    desc="Tokenizing training data"
+)
+val_dataset = val_data.map(
+    preprocess_function, 
+    batched=True, 
+    num_proc=os.cpu_count(),
+    desc="Tokenizing validation data"
+)
+
 # Transform to PyTorch format
 train_dataset.set_format(type='torch', columns=['input_ids','attention_mask','label'])
 val_dataset.set_format(type='torch', columns=['input_ids','attention_mask','label'])
@@ -135,6 +203,47 @@ def compute_metrics(eval_pred):
         f1 = f1_score(labels, preds, average="macro")
     return {"accuracy": acc, "f1": f1}
 
+# Resource monitoring callback
+class ResourceMonitor(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.peak_memory = 0
+        self.training_time = 0
+        self.start_time = None
+        
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Called before training starts"""
+        super().on_train_begin(args, state, control)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        self.start_time = time.time()
+        
+    def on_train_end(self, args, state, control, **kwargs):
+        """Called after training ends"""
+        super().on_train_end(args, state, control)
+        self.training_time = time.time() - self.start_time
+        if torch.cuda.is_available():
+            self.peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)  # GB
+        else:
+            self.peak_memory = 0
+        
+        # Save resource usage
+        try:
+            resources = {
+                "peak_gpu_memory_gb": self.peak_memory,
+                "training_time_minutes": self.training_time / 60,
+                "average_batch_time_ms": (self.training_time * 1000) / (len(self.train_dataset) * self.args.num_train_epochs / self.args.per_device_train_batch_size),
+                "batch_size": self.args.per_device_train_batch_size,
+                "device": str(self.args.device),
+                "fp16": self.args.fp16,
+                "bf16": self.args.bf16
+            }
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            with open(os.path.join(self.args.output_dir, "resource_usage.yaml"), 'w') as f:
+                yaml.dump(resources, f)
+        except Exception as e:
+            print(f"Warning: Failed to save resource usage stats: {str(e)}")
+
 # Setup training arguments
 training_args = TrainingArguments(
     output_dir=output_dir,
@@ -147,12 +256,13 @@ training_args = TrainingArguments(
     learning_rate=learning_rate,
     logging_steps=50,
     bf16=use_bf16,
-    fp16= (use_fp16 and not use_bf16),  # use fp16 if requested (mutually exclusive with bf16)
+    fp16=(use_fp16 and not use_bf16),  # use fp16 if requested (mutually exclusive with bf16)
     dataloader_pin_memory=False,  # avoid issues on some systems
-    report_to="none"  # no Huggingface logging
+    report_to="none",  # no Huggingface logging
+    seed=SEED  # Set seed in training args too
 )
 
-trainer = Trainer(
+trainer = ResourceMonitor(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
@@ -161,15 +271,16 @@ trainer = Trainer(
 )
 
 # Train and evaluate
-start_time = time.time()
 trainer.train()
-training_time = time.time() - start_time
-print(f"Training completed in {training_time/60:.2f} minutes.")
 
 # Final evaluation on validation set
 eval_metrics = trainer.evaluate()
 print(f"Validation results: {eval_metrics}")
 
-# Save final model and tokenizer
+# Save final model, tokenizer and results
 model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
+
+# Save evaluation metrics
+with open(os.path.join(output_dir, "eval_results.yaml"), 'w') as f:
+    yaml.dump(eval_metrics, f)
